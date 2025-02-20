@@ -1,0 +1,142 @@
+// Backend: Node.js + Express.js
+// Database: PostgreSQL
+// Authentication: JWT
+// WebSockets: socket.io
+
+const express = require('express');
+const cors = require('cors');
+const bodyParser = require('body-parser');
+const jwt = require('jsonwebtoken');
+const { Pool } = require('pg');
+const socketIo = require('socket.io');
+const http = require('http');
+const bcrypt = require('bcrypt');
+const path = require('path');
+const { exec } = require('child_process');
+
+const app = express();
+const server = http.createServer(app);
+const io = socketIo(server);
+
+app.use(cors());
+app.use(bodyParser.json());
+app.use(express.static(path.join(__dirname, 'frontend/dist')));
+
+const pool = new Pool({
+    user: 'your_db_user',
+    host: 'localhost',
+    database: 'whatsapp_manager',
+    password: 'your_db_password',
+    port: 5432,
+});
+
+const SECRET_KEY = 'your_secret_key';
+
+// WebSocket for Real-time Updates
+io.on('connection', (socket) => {
+    console.log('New client connected');
+    socket.on('disconnect', () => console.log('Client disconnected'));
+});
+
+// API for fetching dashboard statistics
+app.get('/dashboard-stats', async (req, res) => {
+    try {
+        const totalMessages = await pool.query('SELECT COUNT(*) FROM messages');
+        const totalAccounts = await pool.query('SELECT COUNT(*) FROM accounts');
+        const activeAccounts = await pool.query("SELECT COUNT(*) FROM accounts WHERE status = 'active'");
+        res.json({
+            totalMessages: totalMessages.rows[0].count,
+            totalAccounts: totalAccounts.rows[0].count,
+            activeAccounts: activeAccounts.rows[0].count
+        });
+    } catch (err) {
+        res.status(500).json({ message: 'Error fetching stats' });
+    }
+});
+
+// API for scheduling messages
+app.post('/schedule-message', async (req, res) => {
+    const { accountId, recipient, message, sendAt } = req.body;
+    try {
+        await pool.query(
+            'INSERT INTO messages (account_id, recipient, message, status, created_at) VALUES ($1, $2, $3, $4, $5)',
+            [accountId, recipient, message, 'scheduled', sendAt]
+        );
+        res.json({ success: true, message: 'Message scheduled' });
+    } catch (err) {
+        res.status(400).json({ message: 'Error scheduling message' });
+    }
+});
+
+// API for user activity log
+app.post('/log-activity', async (req, res) => {
+    const { userId, action } = req.body;
+    try {
+        await pool.query(
+            'INSERT INTO user_activity (user_id, action, timestamp) VALUES ($1, $2, NOW())',
+            [userId, action]
+        );
+        res.json({ success: true });
+    } catch (err) {
+        res.status(400).json({ message: 'Error logging activity' });
+    }
+});
+
+// Vue.js Frontend Code for Dashboard with Charts
+const fs = require('fs');
+
+const dashboardCode = `
+<template>
+  <div>
+    <h1>Dashboard</h1>
+    <h2>Statistics</h2>
+    <p>Total Messages: {{ stats.totalMessages }}</p>
+    <p>Total Accounts: {{ stats.totalAccounts }}</p>
+    <p>Active Accounts: {{ stats.activeAccounts }}</p>
+    <canvas id="statsChart"></canvas>
+    <button @click="fetchStats">Refresh Stats</button>
+  </div>
+</template>
+<script>
+import Chart from 'chart.js/auto';
+export default {
+  data() {
+    return {
+      stats: { totalMessages: 0, totalAccounts: 0, activeAccounts: 0 },
+      chart: null
+    };
+  },
+  methods: {
+    async fetchStats() {
+      const response = await fetch('/dashboard-stats');
+      const data = await response.json();
+      this.stats = data;
+      this.updateChart();
+    },
+    updateChart() {
+      if (this.chart) this.chart.destroy();
+      const ctx = document.getElementById('statsChart').getContext('2d');
+      this.chart = new Chart(ctx, {
+        type: 'bar',
+        data: {
+          labels: ['Messages', 'Accounts', 'Active Accounts'],
+          datasets: [{
+            label: 'Statistics',
+            data: [this.stats.totalMessages, this.stats.totalAccounts, this.stats.activeAccounts],
+            backgroundColor: ['red', 'blue', 'green']
+          }]
+        }
+      });
+    }
+  },
+  mounted() {
+    this.fetchStats();
+  }
+};
+</script>
+`;
+fs.writeFileSync('frontend/src/components/Dashboard.vue', dashboardCode);
+
+server.listen(5000, () => {
+    console.log('Server running on port 5000');
+});
